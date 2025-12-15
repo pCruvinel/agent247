@@ -1,8 +1,7 @@
 "use client"
 
 import React, { useState, useEffect, useRef } from 'react';
-import { useSettings } from '@/contexts/SettingsContext';
-import { Contact, ChatMessage } from '@/types';
+import { Contact, ChatMessage, DirecaoMensagem, TipoMensagem, TipoRemetente } from '@/types';
 import { Send, Search, User, MoreVertical, Eraser, AlertTriangle, Loader2 } from 'lucide-react';
 import { useAuth } from '@/contexts/AuthContext';
 import { Button } from '@/components/ui/button';
@@ -20,18 +19,25 @@ interface DBPaciente {
     unread_count: number | null;
 }
 
+// Interface atualizada para o novo schema do banco
 interface DBHistoricoMensagem {
     id: number;
-    paciente_id: number;
-    content: string;
-    sender: string;
-    status: string;
+    paciente_id: number | null;
+    telefone: string;
+    conteudo: string | null;
+    papel: TipoRemetente;
+    status: string | null;
     created_at: string;
-    user_id: string; // Ensure we select this for types, though implied
+    user_id: string | null;
+    instance_id: string | null;
+    tipo_conteudo: TipoMensagem | null;  // Mudou de tipo_mensagem para tipo_conteudo
+    direcao: DirecaoMensagem;  // Novo campo: 'recebido' | 'enviado'
+    media_url: string | null;
+    metadados: Record<string, unknown> | null;
+    session_id: string | null;
 }
 
 const ChatTab = () => {
-    const { settings } = useSettings();
     const { user } = useAuth();
     const [activeContactId, setActiveContactId] = useState<number | null>(null);
     const [messageInput, setMessageInput] = useState('');
@@ -40,16 +46,14 @@ const ChatTab = () => {
     const [contacts, setContacts] = useState<Contact[]>([]);
     const [messages, setMessages] = useState<ChatMessage[]>([]);
 
-    // Clear context modal state
     const [showClearModal, setShowClearModal] = useState(false);
     const [isClearing, setIsClearing] = useState(false);
 
-    // Derived state
     const activeContact = React.useMemo(() =>
         contacts.find(c => Number(c.id) === activeContactId) || null,
         [contacts, activeContactId]);
 
-    // 1. Fetch Contacts (Pacientes)
+    // 1. Fetch Contacts
     useEffect(() => {
         if (!user || !supabase) return;
 
@@ -64,8 +68,8 @@ const ChatTab = () => {
             if (data) {
                 const dbContacts = data as unknown as DBPaciente[];
                 const mappedContacts: Contact[] = dbContacts.map((c) => ({
-                    id: c.id.toString(), // Frontend expects string ID
-                    name: c.nome || c.whatsapp_name || c.telefone, // Fallback
+                    id: c.id.toString(),
+                    name: c.nome || c.whatsapp_name || c.telefone,
                     phone: c.telefone,
                     lastMessage: c.last_message || '',
                     timestamp: c.last_message_at ? new Date(c.last_message_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '',
@@ -77,7 +81,6 @@ const ChatTab = () => {
 
         fetchContacts();
 
-        // Subscribe to new contacts or updates
         const channel = supabase
             .channel('pacientes_chat_channel')
             .on('postgres_changes', { event: '*', schema: 'public', table: 'pacientes', filter: `user_id=eq.${user.id}` }, () => {
@@ -88,7 +91,7 @@ const ChatTab = () => {
         return () => { supabase?.removeChannel(channel); };
     }, [user]);
 
-    // 2. Fetch Messages for Active Contact (HistoricoMensagens)
+    // 2. Fetch Messages (Com novos campos)
     useEffect(() => {
         if (!activeContactId || !user || !supabase) return;
 
@@ -104,27 +107,34 @@ const ChatTab = () => {
                 const dbMessages = data as unknown as DBHistoricoMensagem[];
                 setMessages(dbMessages.map((m) => ({
                     id: m.id.toString(),
-                    content: m.content || '', // Handle null content if legacy
-                    sender: (m.sender as 'user' | 'agent' | 'system') || 'system',
+                    conteudo: m.conteudo || '',
+                    papel: m.papel || 'sistema',
                     timestamp: new Date(m.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-                    status: (m.status as 'sent' | 'delivered' | 'read') || 'sent'
+                    status: m.status || 'sent',
+                    tipo_conteudo: m.tipo_conteudo || 'text',
+                    direcao: m.direcao || 'recebido',
+                    media_url: m.media_url,
+                    metadados: m.metadados || {}
                 })));
             }
         }
 
         fetchMessages();
 
-        // Subscribe to new messages
         const channel = supabase
             .channel(`historico:${activeContactId}`)
             .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'historico_mensagens', filter: `paciente_id=eq.${activeContactId}` }, (payload) => {
                 const newMsg = payload.new as unknown as DBHistoricoMensagem;
                 setMessages(prev => [...prev, {
                     id: newMsg.id.toString(),
-                    content: newMsg.content || '',
-                    sender: (newMsg.sender as 'user' | 'agent' | 'system') || 'system',
+                    conteudo: newMsg.conteudo || '',
+                    papel: newMsg.papel || 'sistema',
                     timestamp: new Date(newMsg.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-                    status: (newMsg.status as 'sent' | 'delivered' | 'read') || 'sent'
+                    status: newMsg.status || 'sent',
+                    tipo_conteudo: newMsg.tipo_conteudo || 'text',
+                    direcao: newMsg.direcao || 'recebido',
+                    media_url: newMsg.media_url,
+                    metadados: newMsg.metadados || {}
                 }]);
             })
             .subscribe();
@@ -141,28 +151,26 @@ const ChatTab = () => {
         if (!messageInput.trim() || !user || !activeContactId || !supabase) return;
 
         const tempContent = messageInput;
-        setMessageInput(''); // Optimistic clear
+        setMessageInput('');
 
-        // 1. Insert into DB (Status: 'sending')
+        // 1. Insert into DB (Usando Schema Novo)
         const { data: insertedMsg, error } = await supabase.from('historico_mensagens').insert({
             user_id: user.id,
             paciente_id: activeContactId,
-            content: tempContent,
-            sender: 'agent',
+            conteudo: tempContent,
+            papel: 'agente_humano', // Assumindo que quem manda pelo painel é um humano
             status: 'sending',
-            telefone: activeContact?.phone, // Required by DB
-            direcao: 'saida', // Outgoing
-            message_type: 'text'
-        }).select('id').single(); // Retrieve the ID
+            telefone: activeContact?.phone,
+            tipo_conteudo: 'text',  // Mudou de tipo_mensagem para tipo_conteudo
+            direcao: 'enviado'      // Novo campo: mensagens do painel são sempre 'enviado'
+        }).select('id').single();
 
         if (error) {
             alert('Erro ao salvar mensagem: ' + error.message);
-            // Revert optimistic update if needed? For now just alert.
             return;
         }
 
-        // 2. Call n8n Webhook to send to WhatsApp
-        // Using global environment variable for multi-tenant support
+        // 2. Call Webhook (Envia para o n8n distribuir no WhatsApp)
         const webhookUrl = process.env.NEXT_PUBLIC_N8N_WEBHOOK_URL || 'https://n8n.webhook.url/webhook/send-message';
 
         if (activeContact && insertedMsg) {
@@ -174,19 +182,17 @@ const ChatTab = () => {
                         user_id: user.id,
                         phone: activeContact.phone,
                         message: tempContent,
-                        message_id: insertedMsg.id // Pass ID to n8n
+                        message_id: insertedMsg.id
                     })
                 });
                 if (!res.ok) {
                     console.error("Webhook Failed", res.status, res.statusText);
-                    // Silent fail or toast? For now, console error is enough as status is optimized
                 }
             } catch (err) {
                 console.error("Webhook Fetch Error:", err);
             }
         }
 
-        // Update paciente last message
         await supabase.from('pacientes').update({
             last_message: tempContent,
             last_message_at: new Date().toISOString()
@@ -195,35 +201,54 @@ const ChatTab = () => {
 
     const handleClearHistory = async () => {
         if (!supabase || !activeContactId || !user) return;
-
         setIsClearing(true);
-
         try {
-            // Delete all messages (sent and received) for this patient
             const { error } = await supabase
                 .from('historico_mensagens')
                 .delete()
                 .eq('paciente_id', activeContactId)
-                .eq('user_id', user.id); // Ensure we only delete user's own messages (RLS)
+                .eq('user_id', user.id);
 
             if (error) {
-                console.error('Erro ao limpar mensagens:', error);
-                alert('Erro ao limpar o histórico de mensagens. Por favor, tente novamente.');
+                alert('Erro ao limpar o histórico.');
                 return;
             }
-
-            // Clear local state
             setMessages([]);
             setShowClearModal(false);
-
-            // Show success feedback
-            alert('Histórico de mensagens limpo com sucesso!');
-
         } catch (err) {
-            console.error('Erro ao limpar histórico:', err);
-            alert('Erro inesperado ao limpar o histórico.');
+            console.error(err);
         } finally {
             setIsClearing(false);
+        }
+    };
+
+    // Helper para renderizar bolhas baseado no 'papel'
+    const getBubbleStyles = (papel: string) => {
+        switch (papel) {
+            case 'agente': // Bot (IA)
+                return {
+                    container: 'justify-start',
+                    bubble: 'bg-[#171717] border border-[#00FFA3]/30 text-white rounded-bl-none',
+                    meta: 'text-[#00FFA3]/70 text-left'
+                };
+            case 'agente_humano': // Humano (Você/Atendente)
+                return {
+                    container: 'justify-end',
+                    bubble: 'bg-[#00FFA3] text-[#0f172a] rounded-br-none',
+                    meta: 'text-emerald-900/70 text-right'
+                };
+            case 'paciente': // Usuário do WhatsApp
+                return {
+                    container: 'justify-start',
+                    bubble: 'bg-[#262626] border border-[#333] text-white rounded-tl-none',
+                    meta: 'text-neutral-500 text-left'
+                };
+            default: // Sistema
+                return {
+                    container: 'justify-center',
+                    bubble: 'bg-transparent border border-[#262626] text-neutral-400 text-xs px-3 py-1 rounded-full',
+                    meta: 'hidden'
+                };
         }
     };
 
@@ -272,7 +297,6 @@ const ChatTab = () => {
             <div className="flex-1 flex flex-col bg-[#0d0d0d]">
                 {activeContact ? (
                     <>
-                        {/* Chat Header */}
                         <div className="h-16 border-b border-[#262626] bg-[#171717] flex items-center justify-between px-6">
                             <div className="flex items-center">
                                 <div className="h-8 w-8 rounded-full bg-[#0d0d0d] border border-[#262626] flex items-center justify-center text-[#00FFA3] text-xs font-bold">
@@ -287,7 +311,7 @@ const ChatTab = () => {
                                 <button
                                     onClick={() => setShowClearModal(true)}
                                     className="p-2 hover:bg-[#262626] text-neutral-500 hover:text-red-400 rounded-md transition-colors"
-                                    title="Limpar Memória de Contexto"
+                                    title="Limpar Memória"
                                 >
                                     <Eraser className="h-5 w-5" />
                                 </button>
@@ -299,36 +323,45 @@ const ChatTab = () => {
 
                         {/* Messages List */}
                         <div className="flex-1 overflow-y-auto p-6 space-y-4">
-                            {messages.map((msg) => (
-                                <div
-                                    key={msg.id}
-                                    className={`flex ${msg.sender === 'system' ? 'justify-center' : (msg.sender === 'user' ? 'justify-start' : 'justify-end')}`}
-                                >
-                                    {msg.sender === 'system' ? (
-                                        <span className="text-xs text-neutral-400 bg-[#262626] px-3 py-1 rounded-full border border-[#262626]">{msg.content}</span>
-                                    ) : (
-                                        <div className={`max-w-[70%] px-4 py-2 rounded-2xl text-sm ${msg.sender === 'agent'
-                                            ? 'bg-[#00FFA3] text-[#0f172a] rounded-br-none'
-                                            : 'bg-[#171717] border border-[#262626] text-white rounded-bl-none shadow-sm'
-                                            }`}>
-                                            <p>{msg.content}</p>
-                                            <p className={`text-[10px] mt-1 text-right ${msg.sender === 'agent' ? 'text-emerald-900/70' : 'text-neutral-500'}`}>
-                                                {msg.timestamp}
-                                            </p>
-                                        </div>
-                                    )}
-                                </div>
-                            ))}
+                            {messages.map((msg) => {
+                                const style = getBubbleStyles(msg.papel);
+                                return (
+                                    <div key={msg.id} className={`flex ${style.container}`}>
+                                        {msg.papel === 'sistema' ? (
+                                            <span className={style.bubble}>{msg.conteudo}</span>
+                                        ) : (
+                                            <div className={`max-w-[70%] px-4 py-2 rounded-2xl text-sm ${style.bubble} shadow-sm`}>
+                                                {/* Exibe nome do remetente se não for 'agente_humano' (eu) */}
+                                                {msg.papel !== 'agente_humano' && (
+                                                    <p className="text-[10px] font-bold opacity-50 mb-1 uppercase tracking-wider">
+                                                        {msg.papel === 'agente' ? 'Ana (IA)' : 'Paciente'}
+                                                    </p>
+                                                )}
+
+                                                <p className="whitespace-pre-wrap">{msg.conteudo}</p>
+
+                                                <div className={`flex items-center justify-end space-x-1 mt-1 ${style.meta}`}>
+                                                    <span className="text-[10px]">{msg.timestamp}</span>
+                                                    {/* Checks de leitura apenas para mensagens enviadas por humanos/bots */}
+                                                    {(msg.papel === 'agente' || msg.papel === 'agente_humano') && (
+                                                        <span className="text-[10px]">
+                                                            {msg.status === 'read' ? '✓✓' : msg.status === 'delivered' ? '✓✓' : '✓'}
+                                                        </span>
+                                                    )}
+                                                </div>
+                                            </div>
+                                        )}
+                                    </div>
+                                );
+                            })}
                             <div ref={chatEndRef} />
                         </div>
 
-                        {/* Input Area */}
                         <div className="p-4 bg-[#171717] border-t border-[#262626]">
                             <div className="flex items-end space-x-2">
                                 <textarea
                                     value={messageInput}
                                     onChange={(e) => setMessageInput(e.target.value)}
-                                    // Submit on Enter (without shift)
                                     onKeyDown={(e) => {
                                         if (e.key === 'Enter' && !e.shiftKey) {
                                             e.preventDefault();
@@ -371,33 +404,12 @@ const ChatTab = () => {
                                     Limpar Memória de Contexto
                                 </h3>
                                 <p className="text-sm text-neutral-400 mb-4">
-                                    Esta ação irá <span className="text-red-400 font-semibold">excluir permanentemente</span> todas as mensagens enviadas e recebidas deste paciente.
-                                    O histórico de conversas será perdido e não poderá ser recuperado.
-                                </p>
-                                <p className="text-sm text-neutral-400 mb-6">
-                                    Paciente: <span className="text-white font-medium">{activeContact?.name}</span>
+                                    Esta ação irá excluir permanentemente o histórico.
                                 </p>
                                 <div className="flex justify-end space-x-3">
-                                    <Button
-                                        onClick={() => setShowClearModal(false)}
-                                        disabled={isClearing}
-                                        className="px-4 py-2 bg-[#262626] text-white hover:bg-[#333333] transition-colors"
-                                    >
-                                        Cancelar
-                                    </Button>
-                                    <Button
-                                        onClick={handleClearHistory}
-                                        disabled={isClearing}
-                                        className="px-4 py-2 bg-red-600 text-white hover:bg-red-700 transition-colors flex items-center space-x-2"
-                                    >
-                                        {isClearing ? (
-                                            <>
-                                                <Loader2 className="h-4 w-4 animate-spin" />
-                                                <span>Limpando...</span>
-                                            </>
-                                        ) : (
-                                            <span>Confirmar Exclusão</span>
-                                        )}
+                                    <Button onClick={() => setShowClearModal(false)} className="px-4 py-2 bg-[#262626]">Cancelar</Button>
+                                    <Button onClick={handleClearHistory} disabled={isClearing} className="px-4 py-2 bg-red-600 text-white">
+                                        {isClearing ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Confirmar'}
                                     </Button>
                                 </div>
                             </div>

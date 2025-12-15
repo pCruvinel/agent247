@@ -6,6 +6,24 @@ export interface WebhookSettings {
     google_api_key: string;
 }
 
+// Métricas de custo da IA
+export interface CostMetrics {
+    total_brl: number;
+    total_input_brl: number;
+    total_output_brl: number;
+    avg_cost_per_message: number;
+    total_messages_with_cost: number;
+    total_input_tokens: number;
+    total_output_tokens: number;
+    total_tokens: number;
+    models_usage: {
+        [model: string]: {
+            count: number;
+            total_cost: number;
+        };
+    };
+}
+
 export interface Contact {
     id: string;
     name: string;
@@ -15,12 +33,46 @@ export interface Contact {
     unreadCount: number;
 }
 
+// Direção da mensagem
+export type DirecaoMensagem = 'recebido' | 'enviado';
+
+// Tipo de conteúdo da mensagem
+export type TipoMensagem = 'text' | 'audio' | 'image' | 'document' | 'video' | 'sticker' | 'location' | 'contact';
+
+// Papel do remetente
+export type TipoRemetente = 'paciente' | 'agente' | 'sistema' | 'agente_humano';
+
+// Estrutura de metadados de custo e uso da mensagem
+export interface MetadadosMensagem {
+    uso?: {
+        estimativa_input?: number;
+        estimativa_total?: number;
+        estimativa_output?: number;
+        buffer_tools_usado?: number;
+    };
+    custos?: {
+        input_usd?: number;
+        total_usd?: number;
+        output_usd?: number;
+    };
+    modelo?: string;
+    guardrails?: {
+        score?: number;
+        passed?: boolean;
+    };
+}
+
+// ATUALIZADO: Usando os termos em PT-BR para alinhar com o banco
 export interface ChatMessage {
     id: string;
-    content: string;
-    sender: 'user' | 'agent' | 'system';
+    conteudo: string;
+    papel: TipoRemetente;
     timestamp: string;
-    status: 'sent' | 'delivered' | 'read';
+    status: string;
+    tipo_conteudo: TipoMensagem;
+    direcao: DirecaoMensagem;
+    media_url?: string | null;
+    metadados?: MetadadosMensagem;
 }
 
 // ============================================

@@ -2,10 +2,10 @@
 
 import React, { useState, useEffect } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { MessageSquare, Users, Clock, ArrowUpRight, ArrowDownRight, Activity, Brain, Smile, Target, TrendingUp, Send, Inbox, CheckCircle2, XCircle, AlertCircle } from 'lucide-react';
-import { useSettings } from '@/contexts/SettingsContext';
+import { Users, ArrowUpRight, ArrowDownRight, Activity, Brain, Smile, Target, Send, Inbox, CheckCircle2, XCircle, AlertCircle, DollarSign, Zap, TrendingDown } from 'lucide-react';
 import { useAuth } from '@/contexts/AuthContext';
 import { supabase } from '@/lib/supabase';
+import { CostMetrics } from '@/types';
 
 interface AnalysisMetrics {
     avg_score: number;
@@ -32,22 +32,36 @@ interface TrendData {
 }
 
 interface MetricsTrends {
-    messages_total: TrendData;
-    messages_today: TrendData;
-    response_rate: TrendData;
+    messages_sent: TrendData;
+    messages_received: TrendData;
+    handoffs: TrendData;
     ai_score: TrendData;
     cerebro: TrendData;
     voz: TrendData;
     resultado: TrendData;
 }
 
+interface MessageStats {
+    sent_current: number;
+    sent_previous: number;
+    received_current: number;
+    received_previous: number;
+}
+
+interface HandoffStats {
+    total_current: number;
+    total_previous: number;
+}
+
 const MetricsTab = () => {
-    const { settings } = useSettings();
     const { user } = useAuth();
     const [timeRange, setTimeRange] = useState('7d');
     const [analysisMetrics, setAnalysisMetrics] = useState<AnalysisMetrics | null>(null);
     const [evolutionStats, setEvolutionStats] = useState<EvolutionStats | null>(null);
     const [trends, setTrends] = useState<MetricsTrends | null>(null);
+    const [costMetrics, setCostMetrics] = useState<CostMetrics | null>(null);
+    const [messageStats, setMessageStats] = useState<MessageStats | null>(null);
+    const [handoffStats, setHandoffStats] = useState<HandoffStats | null>(null);
     const [loading, setLoading] = useState(true);
 
     useEffect(() => {
@@ -121,20 +135,84 @@ const MetricsTab = () => {
                 console.log('Nenhum dado de análise encontrado');
             }
 
-            // Buscar estatísticas do Evolution API
+            // Buscar apenas status da instância Evolution (contagens de mensagens vêm de historico_mensagens agora)
             const { data: evolutionData, error: evolutionError } = await supabase
                 .from('evolution_instances')
-                .select('mensagens_enviadas_hoje, mensagens_recebidas_hoje, total_mensagens_enviadas, total_mensagens_recebidas, status')
+                .select('status')
                 .eq('user_id', user.id)
-                .single();
+                .maybeSingle();
 
             if (evolutionError) {
-                console.error('Erro na query de evolution:', evolutionError);
-            } else {
-                console.log('Dados de evolution encontrados:', evolutionData);
-                if (evolutionData) {
-                    setEvolutionStats(evolutionData);
+                if (evolutionError.code !== 'PGRST116') {
+                    console.error('Erro na query de evolution:', evolutionError);
                 }
+            } else if (evolutionData) {
+                // Adaptamos para a interface EvolutionStats existente mantendo compatibilidade
+                setEvolutionStats({
+                    mensagens_enviadas_hoje: 0,
+                    mensagens_recebidas_hoje: 0,
+                    total_mensagens_enviadas: 0,
+                    total_mensagens_recebidas: 0,
+                    status: evolutionData.status
+                });
+            }
+
+            // Buscar métricas de custo do histórico de mensagens
+            const { data: messagesWithCost, error: costError } = await supabase
+                .from('historico_mensagens')
+                .select('metadados')
+                .eq('user_id', user.id)
+                .gte('created_at', startDateStr)
+                .not('metadados', 'is', null);
+
+            if (costError) {
+                console.error('Erro na query de custo:', costError);
+            } else if (messagesWithCost && messagesWithCost.length > 0) {
+                console.log('Mensagens com custo encontradas:', messagesWithCost.length);
+
+                const USD_TO_BRL = 5.5; // Taxa de conversão USD para BRL
+
+                let totalCost = 0;
+                let totalInputCost = 0;
+                let totalOutputCost = 0;
+                let totalInputTokens = 0;
+                let totalOutputTokens = 0;
+                let totalTokens = 0;
+                const modelsMap: { [key: string]: { count: number; total_cost: number } } = {};
+
+                messagesWithCost.forEach(msg => {
+                    const meta = msg.metadados as any;
+                    if (meta?.custos) {
+                        totalCost += (meta.custos.total_usd || 0) * USD_TO_BRL;
+                        totalInputCost += (meta.custos.input_usd || 0) * USD_TO_BRL;
+                        totalOutputCost += (meta.custos.output_usd || 0) * USD_TO_BRL;
+                    }
+                    if (meta?.uso) {
+                        totalInputTokens += meta.uso.estimativa_input || 0;
+                        totalOutputTokens += meta.uso.estimativa_output || 0;
+                        totalTokens += meta.uso.estimativa_total || 0;
+                    }
+                    if (meta?.modelo) {
+                        const modelo = meta.modelo;
+                        if (!modelsMap[modelo]) {
+                            modelsMap[modelo] = { count: 0, total_cost: 0 };
+                        }
+                        modelsMap[modelo].count += 1;
+                        modelsMap[modelo].total_cost += (meta.custos?.total_usd || 0) * USD_TO_BRL;
+                    }
+                });
+
+                setCostMetrics({
+                    total_brl: totalCost,
+                    total_input_brl: totalInputCost,
+                    total_output_brl: totalOutputCost,
+                    avg_cost_per_message: messagesWithCost.length > 0 ? totalCost / messagesWithCost.length : 0,
+                    total_messages_with_cost: messagesWithCost.length,
+                    total_input_tokens: totalInputTokens,
+                    total_output_tokens: totalOutputTokens,
+                    total_tokens: totalTokens,
+                    models_usage: modelsMap
+                });
             }
 
 
@@ -188,42 +266,68 @@ const MetricsTab = () => {
             const prevAvgResultado = calcAvg(prevAnalysisData || [], i => i.metricas_detalhadas?.resultado?.score_categoria);
 
 
-            // 2. Fetch Message History Counts for Trends
-            // Messages Today Trend vs Yesterday
-            const todayStart = new Date();
-            todayStart.setHours(0, 0, 0, 0);
-            const yesterdayStart = new Date(todayStart);
-            yesterdayStart.setDate(yesterdayStart.getDate() - 1);
-
-            // Count Msgs Yesterday
-            const { count: msgsYesterday } = await supabase
+            // 2. Fetch Message Counts by Direction (Current Period)
+            const { count: sentCurrPeriod } = await supabase
                 .from('historico_mensagens')
                 .select('*', { count: 'exact', head: true })
                 .eq('user_id', user.id)
-                .gte('created_at', yesterdayStart.toISOString())
-                .lt('created_at', todayStart.toISOString());
+                .eq('direcao', 'enviado')
+                .gte('created_at', startDateStr);
 
-            const msgsTodayCount = (evolutionData?.mensagens_enviadas_hoje || 0) + (evolutionData?.mensagens_recebidas_hoje || 0);
-
-            // Count Msgs Current Period
-            const { count: msgsCurrPeriod } = await supabase
+            const { count: receivedCurrPeriod } = await supabase
                 .from('historico_mensagens')
+                .select('*', { count: 'exact', head: true })
+                .eq('user_id', user.id)
+                .eq('direcao', 'recebido')
+                .gte('created_at', startDateStr);
+
+            // Fetch Message Counts by Direction (Previous Period)
+            const { count: sentPrevPeriod } = await supabase
+                .from('historico_mensagens')
+                .select('*', { count: 'exact', head: true })
+                .eq('user_id', user.id)
+                .eq('direcao', 'enviado')
+                .gte('created_at', prevStartDateStr)
+                .lt('created_at', startDateStr);
+
+            const { count: receivedPrevPeriod } = await supabase
+                .from('historico_mensagens')
+                .select('*', { count: 'exact', head: true })
+                .eq('user_id', user.id)
+                .eq('direcao', 'recebido')
+                .gte('created_at', prevStartDateStr)
+                .lt('created_at', startDateStr);
+
+            setMessageStats({
+                sent_current: sentCurrPeriod || 0,
+                sent_previous: sentPrevPeriod || 0,
+                received_current: receivedCurrPeriod || 0,
+                received_previous: receivedPrevPeriod || 0
+            });
+
+            // 3. Fetch Handoff Counts
+            const { count: handoffsCurrPeriod } = await supabase
+                .from('handoffs')
                 .select('*', { count: 'exact', head: true })
                 .eq('user_id', user.id)
                 .gte('created_at', startDateStr);
 
-            // Count Msgs Prev Period
-            const { count: msgsPrevPeriod } = await supabase
-                .from('historico_mensagens')
+            const { count: handoffsPrevPeriod } = await supabase
+                .from('handoffs')
                 .select('*', { count: 'exact', head: true })
                 .eq('user_id', user.id)
                 .gte('created_at', prevStartDateStr)
                 .lt('created_at', startDateStr);
 
+            setHandoffStats({
+                total_current: handoffsCurrPeriod || 0,
+                total_previous: handoffsPrevPeriod || 0
+            });
+
             setTrends({
-                messages_total: calcChange(msgsCurrPeriod || 0, msgsPrevPeriod || 0),
-                messages_today: calcChange(msgsTodayCount, msgsYesterday || 0),
-                response_rate: { value: '+0%', direction: 'neutral' }, // Difícil calcular histórico sem snapshot
+                messages_sent: calcChange(sentCurrPeriod || 0, sentPrevPeriod || 0),
+                messages_received: calcChange(receivedCurrPeriod || 0, receivedPrevPeriod || 0),
+                handoffs: calcChange(handoffsCurrPeriod || 0, handoffsPrevPeriod || 0),
                 ai_score: calcChange(currAvgScore, prevAvgScore),
                 cerebro: calcChange(currAvgCerebro, prevAvgCerebro),
                 voz: calcChange(currAvgVoz, prevAvgVoz),
@@ -238,37 +342,39 @@ const MetricsTab = () => {
         }
     };
 
-    // Placeholder data para métricas gerais
-    const generalStats = [
+    // Indicadores principais no topo
+    const isConnected = evolutionStats && ['connected', 'conectada'].includes(evolutionStats.status?.toLowerCase());
+
+    const mainIndicators = [
         {
-            title: 'Total de Mensagens',
-            value: evolutionStats ? (evolutionStats.total_mensagens_enviadas + evolutionStats.total_mensagens_recebidas).toLocaleString() : '-',
-            change: trends?.messages_total.value || '-',
-            trend: trends?.messages_total.direction || 'neutral',
-            icon: MessageSquare
+            title: 'Mensagens Enviadas',
+            value: messageStats ? messageStats.sent_current.toLocaleString() : '-',
+            change: trends?.messages_sent.value || '-',
+            trend: trends?.messages_sent.direction || 'neutral',
+            icon: Send
         },
         {
-            title: 'Mensagens Hoje',
-            value: evolutionStats ? (evolutionStats.mensagens_enviadas_hoje + evolutionStats.mensagens_recebidas_hoje).toString() : '-',
-            change: trends?.messages_today.value || '-',
-            trend: trends?.messages_today.direction || 'neutral',
+            title: 'Mensagens Recebidas',
+            value: messageStats ? messageStats.received_current.toLocaleString() : '-',
+            change: trends?.messages_received.value || '-',
+            trend: trends?.messages_received.direction || 'neutral',
+            icon: Inbox
+        },
+        {
+            title: 'Handoffs',
+            value: handoffStats ? handoffStats.total_current.toLocaleString() : '-',
+            change: trends?.handoffs.value || '-',
+            trend: trends?.handoffs.direction || 'neutral',
             icon: Users
         },
         {
-            title: 'Taxa de Resposta',
-            value: evolutionStats && evolutionStats.total_mensagens_recebidas > 0
-                ? `${Math.round((evolutionStats.total_mensagens_enviadas / evolutionStats.total_mensagens_recebidas) * 100)}%`
-                : '-',
-            change: trends?.response_rate.value || '-',
-            trend: trends?.response_rate.direction || 'neutral',
-            icon: Clock
-        },
-        {
-            title: 'Score Qualidade IA',
-            value: analysisMetrics ? `${analysisMetrics.avg_score}%` : '-',
-            change: trends?.ai_score.value || '-',
-            trend: trends?.ai_score.direction || 'neutral',
-            icon: Activity
+            title: 'Status da Conexão',
+            value: isConnected ? 'Conectado' : (evolutionStats ? 'Desconectado' : '-'),
+            change: '',
+            trend: 'neutral' as const,
+            icon: Activity,
+            isStatus: true,
+            statusColor: isConnected ? 'emerald' : 'red'
         },
     ];
 
@@ -305,26 +411,33 @@ const MetricsTab = () => {
                 </select>
             </div>
 
-            {/* Métricas Gerais */}
+            {/* Indicadores Principais */}
             <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
-                {generalStats.map((stat, i) => (
+                {mainIndicators.map((stat, i) => (
                     <Card key={i} className="bg-[#0d0d0d] border-[#262626]">
                         <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
                             <CardTitle className="text-sm font-medium text-neutral-400">
                                 {stat.title}
                             </CardTitle>
-                            <stat.icon className="h-4 w-4 text-neutral-500" />
+                            <stat.icon className={`h-4 w-4 ${stat.isStatus
+                                ? (stat.statusColor === 'emerald' ? 'text-emerald-500' : 'text-red-500')
+                                : 'text-neutral-500'
+                                }`} />
                         </CardHeader>
                         <CardContent>
-                            <div className="text-2xl font-bold text-white">{loading ? '...' : stat.value}</div>
-                            <p className={`text-xs flex items-center mt-1 ${stat.trend === 'up'
-                                ? (stat.title.includes('Resposta') ? 'text-red-400' : 'text-emerald-400')
-                                : (stat.title.includes('Resposta') ? 'text-emerald-400' : 'text-red-400')
+                            <div className={`text-2xl font-bold ${stat.isStatus
+                                ? (stat.statusColor === 'emerald' ? 'text-emerald-400' : 'text-red-400')
+                                : 'text-white'
                                 }`}>
-                                {stat.trend === 'up' ? <ArrowUpRight className="mr-1 h-3 w-3" /> : <ArrowDownRight className="mr-1 h-3 w-3" />}
-                                <span className="font-medium">{stat.change}</span>
-                                <span className="text-neutral-500 ml-1">vs último período</span>
-                            </p>
+                                {loading ? '...' : stat.value}
+                            </div>
+                            {stat.change && (
+                                <p className={`text-xs flex items-center mt-1 ${stat.trend === 'up' ? 'text-emerald-400' : 'text-red-400'}`}>
+                                    {stat.trend === 'up' ? <ArrowUpRight className="mr-1 h-3 w-3" /> : <ArrowDownRight className="mr-1 h-3 w-3" />}
+                                    <span className="font-medium">{stat.change}</span>
+                                    <span className="text-neutral-500 ml-1">vs último período</span>
+                                </p>
+                            )}
                         </CardContent>
                     </Card>
                 ))}
@@ -450,62 +563,113 @@ const MetricsTab = () => {
                 </Card>
             )}
 
-            {/* Evolution API Stats */}
-            {evolutionStats && (
+
+            {/* Custos da IA */}
+            {costMetrics && (
                 <div className="space-y-4">
-                    <h2 className="text-lg font-medium text-white">Estatísticas do WhatsApp</h2>
+                    <h2 className="text-lg font-medium text-white">Custos da IA</h2>
 
                     <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
-                        <Card className="bg-[#0d0d0d] border-[#262626]">
+                        <Card className="bg-emerald-950/20 border-emerald-900/30 border">
                             <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-                                <CardTitle className="text-sm font-medium text-neutral-400">
-                                    Enviadas Hoje
+                                <CardTitle className="text-sm font-medium text-emerald-400">
+                                    Custo Total
                                 </CardTitle>
-                                <Send className="h-4 w-4 text-blue-400" />
+                                <DollarSign className="h-4 w-4 text-emerald-500" />
                             </CardHeader>
                             <CardContent>
-                                <div className="text-2xl font-bold text-white">{evolutionStats.mensagens_enviadas_hoje}</div>
+                                <div className="text-2xl font-bold text-emerald-400">
+                                    R$ {costMetrics.total_brl.toFixed(4)}
+                                </div>
+                                <p className="text-xs text-neutral-500 mt-1">
+                                    {costMetrics.total_messages_with_cost} mensagens
+                                </p>
                             </CardContent>
                         </Card>
 
                         <Card className="bg-[#0d0d0d] border-[#262626]">
                             <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
                                 <CardTitle className="text-sm font-medium text-neutral-400">
-                                    Recebidas Hoje
+                                    Custo Médio/Mensagem
                                 </CardTitle>
-                                <Inbox className="h-4 w-4 text-teal-400" />
+                                <TrendingDown className="h-4 w-4 text-blue-400" />
                             </CardHeader>
                             <CardContent>
-                                <div className="text-2xl font-bold text-white">{evolutionStats.mensagens_recebidas_hoje}</div>
-                            </CardContent>
-                        </Card>
-
-                        <Card className="bg-[#0d0d0d] border-[#262626]">
-                            <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-                                <CardTitle className="text-sm font-medium text-neutral-400">
-                                    Total Enviadas
-                                </CardTitle>
-                                <TrendingUp className="h-4 w-4 text-emerald-400" />
-                            </CardHeader>
-                            <CardContent>
-                                <div className="text-2xl font-bold text-white">{evolutionStats.total_mensagens_enviadas.toLocaleString()}</div>
-                            </CardContent>
-                        </Card>
-
-                        <Card className="bg-[#0d0d0d] border-[#262626]">
-                            <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-                                <CardTitle className="text-sm font-medium text-neutral-400">
-                                    Status da Conexão
-                                </CardTitle>
-                                <Activity className={`h-4 w-4 ${['connected', 'conectada'].includes(evolutionStats.status?.toLowerCase()) ? 'text-emerald-500' : 'text-red-500'}`} />
-                            </CardHeader>
-                            <CardContent>
-                                <div className={`text-lg font-bold ${['connected', 'conectada'].includes(evolutionStats.status?.toLowerCase()) ? 'text-emerald-400' : 'text-red-400'}`}>
-                                    {['connected', 'conectada'].includes(evolutionStats.status?.toLowerCase()) ? 'Conectado' : 'Desconectado'}
+                                <div className="text-2xl font-bold text-white">
+                                    R$ {costMetrics.avg_cost_per_message.toFixed(6)}
                                 </div>
                             </CardContent>
                         </Card>
+
+                        <Card className="bg-[#0d0d0d] border-[#262626]">
+                            <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                                <CardTitle className="text-sm font-medium text-neutral-400">
+                                    Tokens Totais
+                                </CardTitle>
+                                <Zap className="h-4 w-4 text-amber-400" />
+                            </CardHeader>
+                            <CardContent>
+                                <div className="text-2xl font-bold text-white">
+                                    {costMetrics.total_tokens.toLocaleString()}
+                                </div>
+                                <p className="text-xs text-neutral-500 mt-1">
+                                    {costMetrics.total_input_tokens.toLocaleString()} in / {costMetrics.total_output_tokens.toLocaleString()} out
+                                </p>
+                            </CardContent>
+                        </Card>
+
+                        <Card className="bg-[#0d0d0d] border-[#262626]">
+                            <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                                <CardTitle className="text-sm font-medium text-neutral-400">
+                                    Modelo Principal
+                                </CardTitle>
+                                <Brain className="h-4 w-4 text-purple-400" />
+                            </CardHeader>
+                            <CardContent>
+                                <div className="text-lg font-bold text-white">
+                                    {Object.entries(costMetrics.models_usage).length > 0
+                                        ? Object.entries(costMetrics.models_usage).sort((a, b) => b[1].count - a[1].count)[0][0]
+                                        : 'N/A'}
+                                </div>
+                                <p className="text-xs text-neutral-500 mt-1">
+                                    {Object.entries(costMetrics.models_usage).length > 0
+                                        ? `${Object.entries(costMetrics.models_usage).sort((a, b) => b[1].count - a[1].count)[0][1].count} mensagens`
+                                        : ''}
+                                </p>
+                            </CardContent>
+                        </Card>
                     </div>
+
+                    {/* Breakdown de custos por modelo */}
+                    {Object.entries(costMetrics.models_usage).length > 1 && (
+                        <Card className="bg-[#0d0d0d] border-[#262626]">
+                            <CardHeader>
+                                <CardTitle className="text-sm font-medium text-neutral-400">
+                                    Distribuição por Modelo
+                                </CardTitle>
+                            </CardHeader>
+                            <CardContent>
+                                <div className="space-y-3">
+                                    {Object.entries(costMetrics.models_usage)
+                                        .sort((a, b) => b[1].total_cost - a[1].total_cost)
+                                        .map(([model, data]) => (
+                                            <div key={model} className="flex items-center justify-between">
+                                                <div className="flex-1">
+                                                    <div className="text-sm font-medium text-white">{model}</div>
+                                                    <div className="text-xs text-neutral-500">{data.count} mensagens</div>
+                                                </div>
+                                                <div className="text-right">
+                                                    <div className="text-sm font-bold text-emerald-400">R$ {data.total_cost.toFixed(4)}</div>
+                                                    <div className="text-xs text-neutral-500">
+                                                        {((data.total_cost / costMetrics.total_brl) * 100).toFixed(1)}%
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        ))}
+                                </div>
+                            </CardContent>
+                        </Card>
+                    )}
                 </div>
             )}
 
