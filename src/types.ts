@@ -145,3 +145,97 @@ export interface EvolutionManagerResponse {
     };
     code?: string; // Código de erro
 }
+
+// ============================================
+// Agent Configuration Types (Gestor do Agente)
+// ============================================
+
+/** Perfil da Empresa */
+export interface AgentCompanyProfile {
+    company_name: string;
+    owner_name: string;
+    address: string;
+    phone: string;
+    website: string;
+    social_media: {
+        instagram?: string;
+        facebook?: string;
+        whatsapp?: string;
+    };
+}
+
+/** Tom de voz do agente */
+export type AgentTone = 'formal' | 'acolhedor' | 'energetico' | 'vendedor';
+
+/** Cérebro/Persona do Agente */
+export interface AgentBrain {
+    bot_name: string;
+    tone: AgentTone;
+    temperature: number; // 0.0 a 1.0
+    custom_instructions: string;
+    handoff_triggers: string[];
+}
+
+/** Horário de funcionamento por dia */
+export interface OperationalHours {
+    day: 'seg' | 'ter' | 'qua' | 'qui' | 'sex' | 'sab' | 'dom';
+    enabled: boolean;
+    open: string; // HH:mm
+    close: string; // HH:mm
+}
+
+/** Configurações Operacionais */
+export interface AgentOperational {
+    hours: OperationalHours[];
+    lunch_start: string;
+    lunch_end: string;
+    timezone: string;
+    vacation_mode: boolean;
+    vacation_message?: string;
+}
+
+/** Item de FAQ */
+export interface FAQItem {
+    id: string;
+    question: string;
+    answer: string;
+}
+
+/** Link de conhecimento */
+export interface KnowledgeLink {
+    id: string;
+    url: string;
+    title: string;
+}
+
+/** Base de Conhecimento */
+export interface AgentKnowledge {
+    faq_items: FAQItem[];
+    links: KnowledgeLink[];
+}
+
+/** Procedimento/Serviço */
+export interface Procedure {
+    id: string;
+    name: string;
+    price: number;
+    price_visible: boolean;
+    duration_minutes: number;
+}
+
+/** Regras de Negócio */
+export interface AgentBusinessRules {
+    procedures: Procedure[];
+    insurance_accepted: string[];
+    payment_policy: string;
+    cancellation_policy: string;
+}
+
+/** Configuração completa do Agente */
+export interface AgentConfig {
+    company: AgentCompanyProfile;
+    brain: AgentBrain;
+    operational: AgentOperational;
+    knowledge: AgentKnowledge;
+    business: AgentBusinessRules;
+}

@@ -4,7 +4,7 @@ import React, { useState } from 'react';
 import { useRouter } from 'next/navigation';
 
 import Image from 'next/image';
-import { LayoutDashboard, MessageSquare, Database, Settings, LogOut, Link2, Megaphone, Lock } from 'lucide-react';
+import { LayoutDashboard, MessageSquare, Database, Settings, LogOut, Link2, Megaphone, Lock, Bot } from 'lucide-react';
 
 // Tabs
 import MetricsTab from '@/components/dashboard/MetricsTab';
@@ -12,15 +12,17 @@ import ConnectionTab from '@/components/dashboard/ConnectionTab';
 import KnowledgeBaseTab from '@/components/dashboard/KnowledgeBaseTab';
 import ChatTab from '@/components/dashboard/ChatTab';
 import SettingsTab from '@/components/dashboard/SettingsTab';
+import AgentTab from '@/components/dashboard/AgentTab';
 
-type Tab = 'overview' | 'connection' | 'knowledge' | 'chat' | 'settings';
+type Tab = 'overview' | 'connection' | 'knowledge' | 'chat' | 'settings' | 'agent';
 
 const tabTitles: Record<Tab, string> = {
     overview: 'Visão Geral',
     connection: 'Conexão',
     knowledge: 'Conhecimento',
     chat: 'Live Chat',
-    settings: 'Configurações'
+    settings: 'Configurações',
+    agent: 'Gestor do Agente'
 };
 
 const NavItem = ({ tab, icon: Icon, label, isActive, onClick, disabled = false }: { tab: Tab | 'campaigns'; icon: React.ElementType; label: string; isActive: boolean; onClick: (t: Tab | 'campaigns') => void, disabled?: boolean }) => (
@@ -62,6 +64,7 @@ export default function DashboardPage() {
             case 'knowledge': return <KnowledgeBaseTab />;
             case 'chat': return <ChatTab />;
             case 'settings': return <SettingsTab />;
+            case 'agent': return <AgentTab />;
             default: return <MetricsTab />;
         }
     };
@@ -84,10 +87,11 @@ export default function DashboardPage() {
 
                 <nav className="flex-1 space-y-1 px-3 py-4">
                     <NavItem tab="overview" icon={LayoutDashboard} label="Visão Geral" isActive={activeTab === 'overview'} onClick={(t) => setActiveTab(t as Tab)} />
+                    <NavItem tab="agent" icon={Bot} label="Agente" isActive={false} onClick={() => { }} disabled={true} />
                     <NavItem tab="chat" icon={MessageSquare} label="Live Chat" isActive={activeTab === 'chat'} onClick={(t) => setActiveTab(t as Tab)} />
+                    <NavItem tab="campaigns" icon={Megaphone} label="Campanhas" isActive={false} onClick={() => { }} disabled={true} />
                     <NavItem tab="connection" icon={Link2} label="Conexão" isActive={activeTab === 'connection'} onClick={(t) => setActiveTab(t as Tab)} />
                     <NavItem tab="knowledge" icon={Database} label="Conhecimento" isActive={activeTab === 'knowledge'} onClick={(t) => setActiveTab(t as Tab)} />
-                    <NavItem tab="campaigns" icon={Megaphone} label="Campanhas" isActive={false} onClick={() => { }} disabled={true} />
                     <div className="pt-4 mt-4 border-t border-[#262626]">
                         <NavItem tab="settings" icon={Settings} label="Configurações" isActive={false} onClick={() => { }} disabled={true} />
                     </div>
